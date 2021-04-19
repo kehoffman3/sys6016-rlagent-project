@@ -9,6 +9,7 @@ from dm_env import specs
 import numpy as np
 import sonnet as snt
 import tensorflow as tf
+#tf.config.run_functions_eagerly(True)
 
 from absl import app
 from absl import flags
@@ -145,20 +146,26 @@ class DQN(base.Agent):
     ])
 
     self._total_steps.assign_add(1)
-    if tf.math.mod(self._total_steps, self._sgd_period) != 0:
+    #print(self._total_steps)
+    #print(tf.math.mod(self._total_steps, self._sgd_period).numpy().item())
+    if tf.math.mod(self._total_steps, self._sgd_period).numpy().item() != 0:
+      #print("NOPE1")
       return
 
     if self._replay.size < self._min_replay_size:
+      #print("NOPE2")
       return
 
     # Do a batch of SGD.
     transitions = self._replay.sample(self._batch_size)
     self._training_step(transitions)
 
-  @tf.function
+ # @tf.function
   def _training_step(self, transitions: Sequence[tf.Tensor]) -> tf.Tensor:
     """Does a step of SGD on a batch of transitions."""
+
     o_tm1, a_tm1, r_t, d_t, o_t = transitions
+    
     r_t = tf.cast(r_t, tf.float32)  # [B]
     d_t = tf.cast(d_t, tf.float32)  # [B]
     o_tm1 = tf.convert_to_tensor(o_tm1)
@@ -172,6 +179,8 @@ class DQN(base.Agent):
       qa_tm1 = tf.reduce_sum(q_tm1 * onehot_actions, axis=-1)  # [B]
       qa_t = tf.reduce_max(q_t, axis=-1)  # [B]
 
+      #print(qa_tm1)
+
       # One-step Q-learning loss.
       target = r_t + d_t * self._discount * qa_t
       td_error = qa_tm1 - target
@@ -183,10 +192,11 @@ class DQN(base.Agent):
     self._optimizer.apply(gradients, variables)
 
     # Periodically copy online -> target network variables.
-    if tf.math.mod(self._total_steps, self._target_update_period) == 0:
+    if tf.math.mod(self._total_steps, self._target_update_period).numpy().item() == 0:
       for target, param in zip(self._target_network.trainable_variables,
-                               self._online_network.trainable_variables):
+                              self._online_network.trainable_variables):
         target.assign(param)
+    #print('loss', loss)
     return loss
 
 
@@ -241,10 +251,64 @@ def main(argv):
     action_spec = specs.DiscreteArray(
         dtype=int, num_values=len(_ACTIONS), name="action")
 
+    # network = snt.Sequential([
+    #   snt.Flatten(),
+    #   snt.nets.MLP([50,50, action_spec.num_values]),
+    # ])
+
+    # 2
+    # network = snt.Sequential([
+    #   snt.Conv2D(32, 3, 4),
+    #   tf.nn.relu,
+    #   snt.Conv2D(64, 2, 2),
+    #   snt.Flatten(),
+    #   snt.Linear(action_spec.num_values),
+    # ])
+
     network = snt.Sequential([
+       snt.Conv2D(32, 3, 4),
+      tf.nn.relu,
+      snt.Conv2D(32, 2, 2),
+      tf.nn.relu,
+      snt.Conv2D(64, 2, 2),
+      tf.nn.relu,
+      snt.Conv2D(64, 2, 2),
+      snt.nets.MLP([32,8]),
       snt.Flatten(),
-      snt.nets.MLP([50, 50, action_spec.num_values]),
+      snt.Linear(action_spec.num_values),
     ])
+
+
+    # network = snt.Sequential([
+    #   snt.Conv2D(32, 3, 4),
+    #   tf.nn.max_pool(ksize=3,strides=4, padding="SAME"),
+    #   #tf.nn.relu,
+    #   #snt.BatchNorm(create_scale=True, create_offset=False, is_tr),
+    #   snt.Conv2D(64, 2, 2),
+    #   tf.nn.max_pool(ksize=2,strides=2, padding="SAME"),
+    #   #tf.nn.relu,
+    #   #snt.BatchNorm(create_scale=True, create_offset=False),
+    #   snt.Conv2D(64, 3, 1),
+    #   tf.nn.max_pool(ksizes=3,strides=1, padding="SAME"),
+    #   #tf.nn.relu,
+    #   #snt.Dropout(0.5),
+    #   #snt.BatchNorm(create_scale=True, create_offset=False),
+    #   snt.nets.MLP([32]),
+    #   tf.nn.relu,
+      
+      
+    #   #snt.LSTM(hidden_size=16),
+    #   #snt.LSTM(hidden_size=16),
+    #   snt.Flatten(),
+    #   snt.Linear(action_spec.num_values),
+    # ])
+
+
+
+
+
+
+
   
     # Set params of our agent
     optimizer = snt.optimizers.Adam(learning_rate=FLAGS.learning_rate)
@@ -277,6 +341,8 @@ def main(argv):
       else:
           action_tracker[action_ref] += 1
 
+      #print(action_tracker)
+
       # Get the key/value of the action by index
       selected_action = _ACTIONS[selected_action_idx]
 
@@ -287,8 +353,11 @@ def main(argv):
       selected_action_name = list(selected_action.keys())[0]
       action[selected_action_name] = selected_action[selected_action_name]
       
+      previous_timestep = copy.deepcopy(timestep)
       # Give the actor's action to the envrionment
       timestep = env.step(action)
+
+      agent.update(previous_timestep, selected_action_idx, timestep)
 
       if not FLAGS.silent:
         # Update the view based on the action
